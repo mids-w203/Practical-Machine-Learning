@@ -1,0 +1,144 @@
+---
+title: "Course Project - Practical Machine Learning"
+author: "Vinicio De Sola, MFE"
+date: "May 10, 2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(caret)
+library(elasticnet)
+library(rpart.plot)
+```
+
+# Classifying the class of Unilateral Dumbbell Biceps Curl depending on wearable accelerometers' data
+
+## Executive Summary 
+
+In this project we're going to use accelerometers' data, provided by [Groupware@LES][1], to classify how well the Unilateral Dumbbell Curl exercise is done according to an A to E scale. We do cross-validation on the training set using a 60/40 split. We'll do a linear SVM, a Boosted Decision Tree, and a Random Forest Classifier.
+
+
+[1]: http://groupware.les.inf.puc-rio.br/har#weight_lifting_exercises
+
+## Data
+
+The data is already divided into a [training][2] and a [test][3] set. The class variable goes from A to E:
+
+-**A Exactly according to the specification**   
+-**B Throwing the elbows to the front**  
+-**C Lifting the dumbbell only halfway**   
+-**D Lowering the dumbbell only halfway**  
+-**E Throwing the hips to the front**  
+
+Only class A means that the exercise is executed correctly. 
+
+[2]: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv
+[3]: https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv
+
+## Data cleaning and subsampling
+
+We start by cleaning the data. First we upload the archive, turning all non-standard characters into NAs. Then, we apply a threshold of 5% of missing data as the benchmark to decide if we keep the variable or not. Although we want to keep the most information possible, unbalanced data with a lot of NAs is worst than dropping variables. The training set is big enough to allow us to do this type of cleaning. We also remove the first 7 variables (the id, the user name, the times of measurement, and the window of measurement).
+
+```{r data}
+## Load the data
+## All non-standard characters are turned into NA
+## We set the seed as 1245 fot reproducibility
+set.seed(1245)
+training <- read.csv('pml-training.csv', na.strings =c('NA','#DIV/0!',""))
+testing <- read.csv('pml-testing.csv',na.strings =c('NA','#DIV/0!',""))
+
+## Data cleaning
+## Remove all variables with a threshold of 5% of NA's
+
+training <- training %>% select_if(colSums(!is.na(.)) > 0.05*nrow(.)) %>% 
+            .[,-c(1:7)]
+testing <- testing %>% select_if(colSums(!is.na(.)) > 0.05*nrow(.)) %>% 
+           .[,-c(1:7)]
+
+## Divide the training into train and validation
+inTrain <- createDataPartition(training$classe, p=0.6, list = FALSE)
+newTrain <- training[inTrain,]
+validation <- training[-inTrain,]
+
+## Number of variables to work with
+dim(newTrain)
+dim(validation)
+dim(testing)
+
+## Look at the distribution of the classes
+plot(newTrain$classe, col='green', main='Histogram of classe', 
+     xlab = 'Classes Levels', ylab='Frequencies')
+```
+
+At the end we are working with 53 variables. The training set will have 11776 observations and the validation set 7846 observations. We have the same 53 variables for the test set. The depedent variable seems balanced. 
+
+## Modeling
+
+### SVM
+
+Let's start using a SVM classifier, with a linear Kernel. We'll use a 10-fold cross-validation as a standard for all models, because it's not too big nor too small of a k (good for the bias-variance trade-off). We need to preprocess the data (center and scale it), as needed to apply any SVM method. We also plot the cross-validation of the parameters (expressed in the grid).
+
+```{r SVM, warning=FALSE, cache=TRUE}
+set.seed(1245)
+trControl <- trainControl(method='cv',number=10)
+grid <- expand.grid(C = c(0,1, 5, 10))
+modelSVM <- train(classe~., data=newTrain, method='svmLinear', 
+                  trControl = trControl, preProcess = c('center', 'scale'),
+                  tuneGrid = grid,
+                  tuneLenght = 10)
+plot(modelSVM, main='Cross-Validation SVM')
+## Accuracy
+predicSMV <- predict(modelSVM, validation, type='raw')
+confusionMatrix(predicSMV, validation$classe)
+```
+We have an accuracy of 0.7981 and the cross-validation is asking for a bigger value of the grid. 
+
+### Boosted Decision Tree
+
+We'll use the boosted algorithm to get better results than regular decision trees. We're going to also use 10-fold classification and preprocess the data. We also plot the cross-validation used for selection of the hyper-parameters
+
+```{r GBM, warning=FALSE, cache=TRUE}
+set.seed(1245)
+trControl <- trainControl(method='cv',number=10,
+                          classProbs=T,savePredictions = T)
+modelGBM <- train(classe~., data=newTrain, method='gbm',
+                  preProcess = c('center', 'scale'),
+                  trControl = trControl, verbose=FALSE)
+predicGBM <- predict(modelGBM, validation, type='raw')
+plot(modelGBM, main='Cross-Validation GBM')
+## Accuracy
+confusionMatrix(predicGBM, validation$classe)
+```
+
+In this model, our accuracy now jumps to 0.9593, and in the cross-validation graph we can see how caret chooses the number the depth and the boosting iterations,
+
+### Random Forest
+
+We're going to also use 10-fold classification and preprocess the data. We also plot the cross-validation used for selection of the hyper-parameters
+
+```{r RF, warning=FALSE, cache=TRUE}
+set.seed(1245)
+trControl <- trainControl(method='cv',number=10,
+                          classProbs=T,savePredictions = T)
+modelRF <- train(classe~., data=newTrain, method='rf',
+                  preProcess = c('center', 'scale'),
+                  trControl = trControl, verbose=FALSE)
+predicRF <- predict(modelRF, validation, type='raw')
+plot(modelRF, main='Cross-Validation RF')
+## Accuracy
+confusionMatrix(predicRF, validation$classe)
+```
+
+At the end we have another jump in accuracy, to 0.9934 in the validation set. Thus, we select Random Forest as the final model. In the cross-validation graph we observe how the accuracy goes down if we increase the randomly selected predictors, thus we are picking the best hyper-parameter. Bar any major overfitting, which we know Random Forest sometimes is guilty of, we expect to have an out-of-sample accuracy around 99%. By definition, it should be lower than the training, but because we run it in a validation set, which we didn't use for training, we can infer similar results.
+
+## Final Prediction
+
+Here is our final prediction using the Random Forest model
+
+```{r prediction}
+prediTest <- predict(modelRF,testing)
+prediTest
+``` 
+
